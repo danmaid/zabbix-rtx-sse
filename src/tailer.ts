@@ -18,6 +18,7 @@ class NdjsonTailer extends EventEmitter {
   private buffer = '';
   private timer: NodeJS.Timeout | null = null;
   private stopped = false;
+  private looping = false;
 
   private watcher: fs.FSWatcher | null = null;
   private idleBackoffMs: number;
@@ -109,6 +110,8 @@ class NdjsonTailer extends EventEmitter {
 
   private async loop() {
     if (this.stopped) return;
+    if (this.looping) return;
+    this.looping = true;
 
     let progressed = false;
     try {
@@ -148,6 +151,7 @@ class NdjsonTailer extends EventEmitter {
       await this.closeFile();
       await this.openFile();
     } finally {
+      this.looping = false;
       if (!this.stopped) {
         this.idleBackoffMs = progressed ? this.intervalMs : Math.min(this.idleBackoffMs * 2, this.maxBackoffMs);
         this.timer = setTimeout(() => this.loop(), this.idleBackoffMs);
@@ -156,6 +160,7 @@ class NdjsonTailer extends EventEmitter {
   }
 
   private onBytes(bytes: Buffer) {
+    let newLines = 0;
     this.buffer += bytes.toString('utf8');
     let idx: number;
     while ((idx = this.buffer.indexOf('\n')) !== -1) {
@@ -163,6 +168,10 @@ class NdjsonTailer extends EventEmitter {
       this.buffer = this.buffer.slice(idx + 1);
       if (!line) continue;
       this.emit('data', { file: this.filePath, record: line });
+      newLines++;
+    }
+    if (newLines > 0) {
+      this.emit('info', { msg: `emitted ${newLines} events from bytes`, file: this.filePath });
     }
   }
 
@@ -176,6 +185,7 @@ export class MultiNdjsonTailer extends EventEmitter {
   private tailers = new Map<string, NdjsonTailer>();
   private watcher: fs.FSWatcher | null = null;
   private scanTimer: NodeJS.Timeout | null = null;
+  private scanning = false;
   private stopped = false;
 
   constructor(dirPath: string, opts: {
@@ -266,6 +276,11 @@ export class MultiNdjsonTailer extends EventEmitter {
       this.emit('info', { msg: 'scanNow skipped - stopped', dir: this.dir });
       return;
     }
+    if (this.scanning) {
+      this.emit('info', { msg: 'scanNow skipped - already scanning', dir: this.dir });
+      return;
+    }
+    this.scanning = true;
     try {
       const entries = await fs.promises.readdir(this.dir);
       const want = new Set(
@@ -315,6 +330,9 @@ export class MultiNdjsonTailer extends EventEmitter {
       }
     } catch (err) {
       this.emit('warn', { msg: 'scan error', err, dir: this.dir });
+    }
+    finally {
+      this.scanning = false;
     }
   }
 }
