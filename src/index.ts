@@ -9,7 +9,7 @@ import { openapi } from './openapi.js';
 // ==== 環境変数 ====
 const PORT = Number(process.env.PORT || 3000);
 const ZBX_RTX_DIR = process.env.ZBX_RTX_DIR || path.resolve('./zbx-rtx');
-const RB_CAPACITY = Number(process.env.RB_CAPACITY || 50000);
+const RB_CAPACITY = Number(process.env.RB_CAPACITY || 1000);
 const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS || 20000);
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 250);
 const MAX_BACKOFF_MS = Number(process.env.MAX_BACKOFF_MS || 2000);
@@ -18,6 +18,11 @@ const MAX_BACKOFF_MS = Number(process.env.MAX_BACKOFF_MS || 2000);
 class SseHub {
   private clients = new Set<http.ServerResponse>();
   private timer: NodeJS.Timeout | null = null;
+  private dropThreshold: number;
+
+  constructor(dropThreshold = Number(process.env.SSE_DROP_THRESHOLD || 64 * 1024)) {
+    this.dropThreshold = dropThreshold;
+  }
 
   add(res: http.ServerResponse) { this.clients.add(res); }
   delete(res: http.ServerResponse) { this.clients.delete(res); }
@@ -25,9 +30,8 @@ class SseHub {
   heartbeatStart() {
     this.heartbeatStop();
     this.timer = setInterval(() => {
-      for (const res of this.clients) res.write(`: hb ${Date.now()}
-
-`);
+      const pkt = `: hb ${Date.now()}\n\n`;
+      for (const res of this.clients) this.safeWrite(res, pkt);
     }, HEARTBEAT_MS);
   }
   heartbeatStop() { if (this.timer) clearInterval(this.timer); this.timer = null; }
@@ -41,17 +45,27 @@ class SseHub {
     this.clients.clear();
   }
 
+  private safeWrite(res: http.ServerResponse, pkt: string) {
+    try {
+      const w = res as any;
+      if (w.writableEnded || w.destroyed || w.writable === false) { this.delete(res); return; }
+      const pending = typeof w.writableLength === 'number' ? w.writableLength : 0;
+      if (pending >= this.dropThreshold) return; // drop this message for this client
+      res.write(pkt);
+    } catch {
+      try { res.end(); } catch { }
+      this.delete(res);
+    }
+  }
+
   broadcast(event: string, payload: unknown, id?: number) {
     const data = typeof payload === 'string' ? payload : JSON.stringify(payload);
-    for (const res of this.clients) {
-      if (id != null) res.write(`id: ${id}
-`);
-      if (event) res.write(`event: ${event}
-`);
-      res.write(`data: ${data}
-
-`);
-    }
+    const lines: string[] = [];
+    if (id != null) lines.push(`id: ${id}\n`);
+    if (event) lines.push(`event: ${event}\n`);
+    lines.push(`data: ${data}\n\n`);
+    const pkt = lines.join('');
+    for (const res of this.clients) this.safeWrite(res, pkt);
   }
 }
 

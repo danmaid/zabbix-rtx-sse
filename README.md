@@ -20,7 +20,7 @@ npm run build
 # 実行前に環境変数を設定
 export ZBX_RTX_DIR=/var/lib/zabbix/rt-export
 export PORT=3000
-export RB_CAPACITY=50000 HEARTBEAT_MS=20000 POLL_INTERVAL_MS=250 MAX_BACKOFF_MS=2000
+export RB_CAPACITY=1000 HEARTBEAT_MS=20000 POLL_INTERVAL_MS=250 MAX_BACKOFF_MS=2000
 
 npm start
 ```
