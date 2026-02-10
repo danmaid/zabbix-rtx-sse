@@ -218,7 +218,23 @@ export class MultiNdjsonTailer extends EventEmitter {
     this.stopped = true;
     this.stopWatcher();
     if (this.scanTimer) { clearTimeout(this.scanTimer); this.scanTimer = null; }
-    for (const t of this.tailers.values()) await t.stop();
+
+    // Stop child tailers in parallel with per-tailer timeout to avoid long sequential shutdowns
+    const stopPromises: Promise<void>[] = [];
+    for (const [file, t] of this.tailers) {
+      const p = (async () => {
+        try {
+          await Promise.race([
+            t.stop(),
+            new Promise<void>((_, rej) => setTimeout(() => rej(new Error('tailer.stop timeout')), 2000))
+          ]);
+        } catch (err) {
+          this.emit('warn', { msg: 'tailer stop failed or timed out', file, err });
+        }
+      })();
+      stopPromises.push(p);
+    }
+    await Promise.allSettled(stopPromises);
     this.tailers.clear();
   }
 
@@ -240,11 +256,16 @@ export class MultiNdjsonTailer extends EventEmitter {
   }
 
   private debouncedScan(delay = 150) {
+    if (this.stopped) return;
     if (this.scanTimer) clearTimeout(this.scanTimer);
-    this.scanTimer = setTimeout(() => this.scanNow(), delay);
+    this.scanTimer = setTimeout(() => { if (!this.stopped) this.scanNow(); }, delay);
   }
 
   private async scanNow() {
+    if (this.stopped) {
+      this.emit('info', { msg: 'scanNow skipped - stopped', dir: this.dir });
+      return;
+    }
     try {
       const entries = await fs.promises.readdir(this.dir);
       const want = new Set(
@@ -255,9 +276,17 @@ export class MultiNdjsonTailer extends EventEmitter {
       );
 
       for (const abs of want) {
+        if (this.stopped) break;
         if (this.tailers.has(abs)) continue;
         const t = new NdjsonTailer(abs, this.tailOpts);
         this.tailers.set(abs, t);
+
+        if (this.stopped) {
+          // If stop() was called concurrently, ensure we don't leave a running tailer
+          try { await t.stop(); } catch { }
+          this.tailers.delete(abs);
+          continue;
+        }
 
         t.on('ready', info => this.emit('ready', info));
         t.on('info', info => this.emit('info', info));
