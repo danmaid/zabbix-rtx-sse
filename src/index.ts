@@ -73,24 +73,24 @@ const hub = new SseHub();
 const ring = new RingBuffer(RB_CAPACITY);
 
 // ==== Tailer ====
-console.log('[init] ZBX_RTX_DIR:', ZBX_RTX_DIR);
+console.log(`[init] ZBX_RTX_DIR=${ZBX_RTX_DIR}`);
 const multi = new MultiNdjsonTailer(ZBX_RTX_DIR, {
   intervalMs: POLL_INTERVAL_MS,
   maxBackoffMs: MAX_BACKOFF_MS,
   startAtEnd: true,
 });
 
-multi.on('ready', info => console.log('[tailer] ready', info));
-multi.on('info', info => console.log('[tailer]', info));
-multi.on('warn', info => console.warn('[tailer]', info));
-multi.on('parse_error', info => console.warn('[tailer] parse_error', info.err, 'file=', info.file));
+multi.on('ready', info => console.log(`[tailer] ready file=${info.file} size=${info.size} inode=${info.inode}`));
+multi.on('info', info => console.log(`[tailer] info msg=${JSON.stringify(info.msg)} file=${info.file}`));
+multi.on('warn', info => console.warn(`[tailer] warn msg=${JSON.stringify(info.msg)} file=${info.file}`));
+multi.on('parse_error', info => console.warn(`[tailer] parse_error file=${info.file} err=${info.err}`));
 
 multi.on('data', ({ file, family, record }) => {
   const env = ring.push({ source: { file: path.basename(file), family }, record });
   const evt = `zabbix.${family}`;
   const payload = process.env.DEBUG_FULL_PAYLOAD ? env : env.record;
   if (process.env.DEBUG_EVENTS === '1') {
-    console.log('[http.broadcast]', evt, 'id=', env.id);
+    console.log(`[http.broadcast] event=${evt} id=${env.id}`);
   }
   hub.broadcast(evt, payload, env.id);
 });
@@ -246,7 +246,8 @@ server.on('connection', (sock) => {
 });
 
 server.listen(PORT, async () => {
-  console.log(`[http] http://localhost:${PORT}  (SSE/JSON/HTML: /v1/events/zabbix/, OpenAPI: /v1/events/zabbix/openapi.json)`);
+  console.log(`[http] listening on http://localhost:${PORT}`);
+  console.log(`[http] endpoints: /v1/events/zabbix/ (SSE/JSON/HTML), /v1/events/zabbix/openapi.json (OpenAPI)`);
   // 心拍開始
   hub.heartbeatStart();
   await multi.start();
@@ -257,23 +258,23 @@ const shutdown = async () => {
   if ((process as any).__shuttingDown) return;
   (process as any).__shuttingDown = true;
   console.log('[shutdown] start');
-  try { hub.close(); } catch (err) { console.error('[shutdown] hub.close error', err); }
+  try { hub.close(); } catch (err) { console.error(`[shutdown] hub.close error: ${err}`); }
   console.log('[shutdown] hub closed, stopping tailer...');
 
   // Give tailer a chance to stop with timeout
   try {
     const tailerStop = multi.stop();
     const tailerTimeout = setTimeout(() => {
-      console.error('[shutdown] tailer.stop() timeout, forcing exit');
+      console.error('[shutdown] tailer.stop() timeout after 3s, forcing exit');
     }, 3000);
     await Promise.race([tailerStop, new Promise<void>(r => tailerTimeout)]);
     clearTimeout(tailerTimeout);
-  } catch (err) { console.error('[shutdown] multi.stop error', err); }
+    } catch (err) { console.error(`[shutdown] multi.stop error: ${err}`); }
   console.log('[shutdown] tailer stopped, closing server...');
 
   // Close server and wait; force exit after timeout
   const force = setTimeout(() => {
-    console.error('[shutdown] server.close() timeout, force exit');
+    console.error('[shutdown] server.close() timeout after 3s, force exit');
     process.exit(1);
   }, 3000);
 
@@ -283,7 +284,7 @@ const shutdown = async () => {
     for (const s of sockets) {
       try { s.destroy(); } catch { }
     }
-  } catch (err) { console.error('[shutdown] destroy sockets error', err); }
+} catch (err) { console.error(`[shutdown] destroy sockets error: ${err}`); }
 
   await new Promise<void>((resolve) => server.close(() => resolve()));
   clearTimeout(force);

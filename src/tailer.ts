@@ -52,12 +52,12 @@ class NdjsonTailer extends EventEmitter {
   }
 
   async stop() {
-    console.log('[tailer.stop] start', this.filePath);
+    console.log(`[tailer.stop] start file=${this.filePath}`);
     this.stopped = true;
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     this.stopWatcher();
     await this.closeFile();
-    console.log('[tailer.stop] complete', this.filePath);
+    console.log(`[tailer.stop] complete file=${this.filePath}`);
   }
 
   private startWatcher() {
