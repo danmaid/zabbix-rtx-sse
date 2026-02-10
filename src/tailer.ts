@@ -73,7 +73,7 @@ class NdjsonTailer extends EventEmitter {
   }
 
   private stopWatcher() {
-    try { this.watcher?.close(); } catch {}
+    try { this.watcher?.close(); } catch { }
     this.watcher = null;
   }
 
@@ -100,7 +100,7 @@ class NdjsonTailer extends EventEmitter {
 
   private async closeFile() {
     if (this.fd) {
-      try { await this.fd.close(); } catch {}
+      try { await this.fd.close(); } catch { }
       this.fd = null;
     }
   }
@@ -160,12 +160,7 @@ class NdjsonTailer extends EventEmitter {
       const line = this.buffer.slice(0, idx).replace(/\r$/, '');
       this.buffer = this.buffer.slice(idx + 1);
       if (!line) continue;
-      try {
-        const obj = JSON.parse(line);
-        this.emit('data', { file: this.filePath, record: obj });
-      } catch (e) {
-        this.emit('parse_error', { file: this.filePath, line, err: e });
-      }
+      this.emit('data', { file: this.filePath, record: line });
     }
   }
 
@@ -238,7 +233,7 @@ export class MultiNdjsonTailer extends EventEmitter {
   }
 
   private stopWatcher() {
-    try { this.watcher?.close(); } catch {}
+    try { this.watcher?.close(); } catch { }
     this.watcher = null;
   }
 
@@ -270,10 +265,10 @@ export class MultiNdjsonTailer extends EventEmitter {
           const base = path.basename(file);
           const family: Family =
             base.startsWith('problems-') ? 'problems' :
-            base.startsWith('history-')  ? 'history'  :
-            base.includes('main-process') ? 'main-process' :
-            base.includes('task-manager') ? 'task-manager' :
-            'other';
+              base.startsWith('history-') ? 'history' :
+                base.includes('main-process') ? 'main-process' :
+                  base.includes('task-manager') ? 'task-manager' :
+                    'other';
           this.emit('data', { file, family, record });
         });
 

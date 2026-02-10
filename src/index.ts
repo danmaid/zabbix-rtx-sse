@@ -31,6 +31,15 @@ class SseHub {
   }
   heartbeatStop() { if (this.timer) clearInterval(this.timer); this.timer = null; }
 
+  // Close all clients and stop heartbeat
+  close() {
+    this.heartbeatStop();
+    for (const res of this.clients) {
+      try { res.end(); } catch { }
+    }
+    this.clients.clear();
+  }
+
   broadcast(event: string, payload: unknown, id?: number) {
     const data = typeof payload === 'string' ? payload : JSON.stringify(payload);
     for (const res of this.clients) {
@@ -63,8 +72,7 @@ multi.on('parse_error', info => console.warn('[tailer] parse_error', info.err, '
 multi.on('data', ({ file, family, record }) => {
   const env = ring.push({ source: { file: path.basename(file), family }, record });
   const evt = `zabbix.${family}`;
-  const payload = { source: env.source, record: env.record };
-  hub.broadcast(evt, payload, env.id);
+  hub.broadcast(evt, env.record, env.id);
 });
 
 function negotiate(accept: string | undefined): 'sse' | 'json' | 'html' {
@@ -96,20 +104,39 @@ const DEMO_HTML = `<!doctype html>
 <p><button id="pause">Pause</button> <button id="resume">Resume</button></p>
 <pre id="log"></pre>
 <script>
-  let paused = false;
-  const log = document.getElementById('log');
-  function println(s){ log.textContent += s + "
-"; log.scrollTop = log.scrollHeight; }
-  const es = new EventSource('/v1/events/zabbix/');
-  es.addEventListener('zabbix.problems', e => { if (!paused) println("[problems] " + e.data); });
-  es.addEventListener('zabbix.history',  e => { if (!paused) println("[history ] " + e.data); });
-  es.addEventListener('zabbix.main-process', e => { if (!paused) println("[main   ] " + e.data); });
-  es.addEventListener('zabbix.task-manager', e => { if (!paused) println("[task   ] " + e.data); });
-  es.addEventListener('zabbix.other', e => { if (!paused) println("[other  ] " + e.data); });
-  es.onerror = e => println("[error] " + (e?.message || e));
-  document.getElementById('pause').onclick = () => paused = true;
-  document.getElementById('resume').onclick = () => paused = false;
-</script>`;
+  (async function(){
+    let paused = false;
+    const log = document.getElementById('log');
+    function println(s){ log.textContent += s + "\n"; log.scrollTop = log.scrollHeight; }
+
+    // Fetch recent items via JSON API for initial view
+    try {
+      const resp = await fetch('/v1/events/zabbix/?limit=100', { headers: { 'Accept': 'application/json' } });
+      if (resp.ok) {
+        const j = await resp.json();
+        if (j.items && Array.isArray(j.items)) {
+          for (const it of j.items) println('[history] ' + JSON.stringify(it));
+        }
+      } else {
+        println('[fetch] HTTP ' + resp.status);
+      }
+    } catch (err) { println('[fetch] ' + err); }
+
+    const es = new EventSource('/v1/events/zabbix/');
+    es.onopen = () => println('[sse] connected');
+    es.addEventListener('zabbix.problems', e => { if (!paused) println('[problems] ' + e.data); });
+    es.addEventListener('zabbix.history',  e => { if (!paused) println('[history ] ' + e.data); });
+    es.addEventListener('zabbix.main-process', e => { if (!paused) println('[main   ] ' + e.data); });
+    es.addEventListener('zabbix.task-manager', e => { if (!paused) println('[task   ] ' + e.data); });
+    es.addEventListener('zabbix.other', e => { if (!paused) println('[other  ] ' + e.data); });
+    es.onerror = e => println('[error] ' + (e?.message || e));
+
+    document.getElementById('pause').onclick = () => paused = true;
+    document.getElementById('resume').onclick = () => paused = false;
+  })();
+</script>
+
+`;
 
 const server = http.createServer((req, res) => {
   const parsed = url.parse(req.url || '', true);
@@ -132,7 +159,7 @@ const server = http.createServer((req, res) => {
 
 `);
       hub.add(res);
-      req.on('close', () => { hub.delete(res); try { res.end(); } catch {} });
+      req.on('close', () => { hub.delete(res); try { res.end(); } catch { } });
       return;
     }
 
@@ -164,21 +191,29 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, async () => {
   console.log(`[http] http://localhost:${PORT}  (SSE/JSON/HTML: /v1/events/zabbix/, OpenAPI: /v1/events/zabbix/openapi.json)`);
   // 心拍開始
-  setInterval(() => {
-    for (const res of (hub as any).clients as Set<http.ServerResponse>) {
-      try { res.write(`: hb ${Date.now()}
-
-`); } catch {}
-    }
-  }, HEARTBEAT_MS);
+  hub.heartbeatStart();
   await multi.start();
 });
 
 // Graceful shutdown
 const shutdown = async () => {
+  if ((process as any).__shuttingDown) return;
+  (process as any).__shuttingDown = true;
   console.log('[shutdown]');
-  await multi.stop();
-  server.close(() => process.exit(0));
+  try { hub.close(); } catch (err) { console.error('[shutdown] hub.close error', err); }
+
+  // Give tailer a chance to stop
+  try { await multi.stop(); } catch (err) { console.error('[shutdown] multi.stop error', err); }
+
+  // Close server and wait; force exit after timeout
+  const force = setTimeout(() => {
+    console.error('[shutdown] force exit');
+    process.exit(1);
+  }, 5000);
+
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  clearTimeout(force);
+  process.exit(0);
 };
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
