@@ -88,7 +88,8 @@ multi.on('parse_error', info => console.warn('[tailer] parse_error', info.err, '
 multi.on('data', ({ file, family, record }) => {
   const env = ring.push({ source: { file: path.basename(file), family }, record });
   const evt = `zabbix.${family}`;
-  hub.broadcast(evt, env.record, env.id);
+  const payload = process.env.DEBUG_FULL_PAYLOAD ? env : env.record;
+  hub.broadcast(evt, payload, env.id);
 });
 
 function negotiate(accept: string | undefined): 'sse' | 'json' | 'html' {
