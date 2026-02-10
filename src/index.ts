@@ -1,4 +1,5 @@
 import http from 'node:http';
+import net from 'node:net';
 import url from 'node:url';
 import path from 'node:path';
 import { MultiNdjsonTailer } from './tailer.js';
@@ -107,7 +108,7 @@ const DEMO_HTML = `<!doctype html>
   (async function(){
     let paused = false;
     const log = document.getElementById('log');
-    function println(s){ log.textContent += s + "\n"; log.scrollTop = log.scrollHeight; }
+    function println(s){ log.textContent += s + "\\n"; log.scrollTop = log.scrollHeight; }
 
     // Fetch recent items via JSON API for initial view
     try {
@@ -188,6 +189,13 @@ const server = http.createServer((req, res) => {
   res.end('Not Found');
 });
 
+// Track open sockets so we can forcefully destroy them on shutdown
+const sockets = new Set<net.Socket>();
+server.on('connection', (sock) => {
+  sockets.add(sock);
+  sock.on('close', () => sockets.delete(sock));
+});
+
 server.listen(PORT, async () => {
   console.log(`[http] http://localhost:${PORT}  (SSE/JSON/HTML: /v1/events/zabbix/, OpenAPI: /v1/events/zabbix/openapi.json)`);
   // 心拍開始
@@ -210,6 +218,13 @@ const shutdown = async () => {
     console.error('[shutdown] force exit');
     process.exit(1);
   }, 5000);
+
+  // Destroy any remaining sockets to accelerate close
+  try {
+    for (const s of sockets) {
+      try { s.destroy(); } catch { }
+    }
+  } catch (err) { console.error('[shutdown] destroy sockets error', err); }
 
   await new Promise<void>((resolve) => server.close(() => resolve()));
   clearTimeout(force);
