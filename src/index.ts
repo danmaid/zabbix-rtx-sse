@@ -109,7 +109,7 @@ function sendJson(res: http.ServerResponse, obj: unknown) {
 
 const DEMO_HTML = `<!doctype html>
 <meta charset="utf-8">
-<title>Zabbix NDJSON → SSE/JSON</title>
+<title>Zabbix NDJSON → SSE/JSON (Counts)</title>
 <style>
   body { font: 14px/1.6 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 20px; }
   pre { background: #111; color: #0f0; padding: 12px; border-radius: 8px; height: 50vh; overflow: auto; }
@@ -122,32 +122,58 @@ const DEMO_HTML = `<!doctype html>
   (async function(){
     let paused = false;
     const log = document.getElementById('log');
-    function println(s){ log.textContent += s + "\\n"; log.scrollTop = log.scrollHeight; }
 
-    // Fetch recent items via JSON API for initial view
+    const counts = { total: 0, problems: 0, history: 0, 'main-process': 0, 'task-manager': 0, other: 0 };
+
+    function render(){
+      const lines = [
+        'total: ' + counts.total,
+        'problems: ' + counts.problems,
+        'history: ' + counts.history,
+        'main-process: ' + counts['main-process'],
+        'task-manager: ' + counts['task-manager'],
+        'other: ' + counts.other,
+      ];
+      log.textContent = lines.join('\\n');
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function incType(t){
+      counts.total++;
+      if (t && counts[t] != null) counts[t]++;
+      else counts.other++;
+      render();
+    }
+
+    // Fetch recent items via JSON API for initial view (count only)
     try {
       const resp = await fetch('/v1/events/zabbix/?limit=100', { headers: { 'Accept': 'application/json' } });
       if (resp.ok) {
         const j = await resp.json();
         if (j.items && Array.isArray(j.items)) {
-          for (const it of j.items) println('[history] ' + JSON.stringify(it));
+          for (const it of j.items) {
+            const fam = (it && it.source && it.source.family) ? it.source.family : 'other';
+            if (!paused) incType(fam);
+          }
         }
       } else {
-        println('[fetch] HTTP ' + resp.status);
+        log.textContent = '[fetch] HTTP ' + resp.status;
       }
-    } catch (err) { println('[fetch] ' + err); }
+    } catch (err) { log.textContent = '[fetch] ' + err; }
 
     const es = new EventSource('/v1/events/zabbix/');
-    es.onopen = () => println('[sse] connected');
-    es.addEventListener('zabbix.problems', e => { if (!paused) println('[problems] ' + e.data); });
-    es.addEventListener('zabbix.history',  e => { if (!paused) println('[history ] ' + e.data); });
-    es.addEventListener('zabbix.main-process', e => { if (!paused) println('[main   ] ' + e.data); });
-    es.addEventListener('zabbix.task-manager', e => { if (!paused) println('[task   ] ' + e.data); });
-    es.addEventListener('zabbix.other', e => { if (!paused) println('[other  ] ' + e.data); });
-    es.onerror = e => println('[error] ' + (e?.message || e));
+    es.onopen = () => { /* connected */ };
+    es.addEventListener('zabbix.problems', e => { if (!paused) incType('problems'); });
+    es.addEventListener('zabbix.history',  e => { if (!paused) incType('history'); });
+    es.addEventListener('zabbix.main-process', e => { if (!paused) incType('main-process'); });
+    es.addEventListener('zabbix.task-manager', e => { if (!paused) incType('task-manager'); });
+    es.addEventListener('zabbix.other', e => { if (!paused) incType('other'); });
+    es.onerror = e => { /* ignore errors for demo */ };
 
     document.getElementById('pause').onclick = () => paused = true;
     document.getElementById('resume').onclick = () => paused = false;
+
+    render();
   })();
 </script>
 
