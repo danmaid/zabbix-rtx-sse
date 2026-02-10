@@ -18,14 +18,10 @@ const MAX_BACKOFF_MS = Number(process.env.MAX_BACKOFF_MS || 2000);
 class SseHub {
   private clients = new Set<http.ServerResponse>();
   private timer: NodeJS.Timeout | null = null;
-  private flushTimer: NodeJS.Timeout | null = null;
-  private outBuf: string[] = [];
-  private flushIntervalMs: number;
   private dropThreshold: number;
 
   constructor(dropThreshold = Number(process.env.SSE_DROP_THRESHOLD || 64 * 1024)) {
     this.dropThreshold = dropThreshold;
-    this.flushIntervalMs = Number(process.env.SSE_FLUSH_MS || 100);
   }
 
   add(res: http.ServerResponse) { this.clients.add(res); }
@@ -62,17 +58,6 @@ class SseHub {
     }
   }
 
-  private scheduleFlush() {
-    if (this.flushTimer) return;
-    this.flushTimer = setTimeout(() => {
-      this.flushTimer = null;
-      const batch = this.outBuf.splice(0);
-      if (batch.length === 0) return;
-      const pkt = batch.join('');
-      for (const res of this.clients) this.safeWrite(res, pkt);
-    }, this.flushIntervalMs);
-  }
-
   broadcast(event: string, payload: unknown, id?: number) {
     const data = typeof payload === 'string' ? payload : JSON.stringify(payload);
     const lines: string[] = [];
@@ -80,12 +65,7 @@ class SseHub {
     if (event) lines.push(`event: ${event}\n`);
     lines.push(`data: ${data}\n\n`);
     const pkt = lines.join('');
-    // accumulate into buffer and flush periodically to avoid writing per-client per-event
-    this.outBuf.push(pkt);
-    // prevent unbounded growth
-    const maxBuf = Number(process.env.SSE_MAX_QUEUE || 10000);
-    if (this.outBuf.length > maxBuf) this.outBuf.splice(0, this.outBuf.length - maxBuf);
-    this.scheduleFlush();
+    for (const res of this.clients) this.safeWrite(res, pkt);
   }
 }
 
