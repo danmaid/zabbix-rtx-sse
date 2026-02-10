@@ -73,6 +73,7 @@ const hub = new SseHub();
 const ring = new RingBuffer(RB_CAPACITY);
 
 // ==== Tailer ====
+console.log('[init] ZBX_RTX_DIR:', ZBX_RTX_DIR);
 const multi = new MultiNdjsonTailer(ZBX_RTX_DIR, {
   intervalMs: POLL_INTERVAL_MS,
   maxBackoffMs: MAX_BACKOFF_MS,
@@ -233,6 +234,10 @@ const server = http.createServer((req, res) => {
 const sockets = new Set<net.Socket>();
 server.on('connection', (sock) => {
   sockets.add(sock);
+  // Set idle timeout to prevent zombie connections
+  sock.setTimeout(HEARTBEAT_MS * 3, () => {
+    try { sock.destroy(); } catch { }
+  });
   sock.on('close', () => sockets.delete(sock));
 });
 
@@ -247,20 +252,30 @@ server.listen(PORT, async () => {
 const shutdown = async () => {
   if ((process as any).__shuttingDown) return;
   (process as any).__shuttingDown = true;
-  console.log('[shutdown]');
+  console.log('[shutdown] start');
   try { hub.close(); } catch (err) { console.error('[shutdown] hub.close error', err); }
+  console.log('[shutdown] hub closed, stopping tailer...');
 
-  // Give tailer a chance to stop
-  try { await multi.stop(); } catch (err) { console.error('[shutdown] multi.stop error', err); }
+  // Give tailer a chance to stop with timeout
+  try {
+    const tailerStop = multi.stop();
+    const tailerTimeout = setTimeout(() => {
+      console.error('[shutdown] tailer.stop() timeout, forcing exit');
+    }, 3000);
+    await Promise.race([tailerStop, new Promise<void>(r => tailerTimeout)]);
+    clearTimeout(tailerTimeout);
+  } catch (err) { console.error('[shutdown] multi.stop error', err); }
+  console.log('[shutdown] tailer stopped, closing server...');
 
   // Close server and wait; force exit after timeout
   const force = setTimeout(() => {
-    console.error('[shutdown] force exit');
+    console.error('[shutdown] server.close() timeout, force exit');
     process.exit(1);
-  }, 5000);
+  }, 3000);
 
   // Destroy any remaining sockets to accelerate close
   try {
+    console.log('[shutdown] destroying', sockets.size, 'sockets');
     for (const s of sockets) {
       try { s.destroy(); } catch { }
     }
@@ -268,6 +283,7 @@ const shutdown = async () => {
 
   await new Promise<void>((resolve) => server.close(() => resolve()));
   clearTimeout(force);
+  console.log('[shutdown] complete');
   process.exit(0);
 };
 process.on('SIGINT', shutdown);
